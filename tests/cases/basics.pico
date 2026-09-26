@@ -1,0 +1,14 @@
+let a = 10
+let b = 3
+print(a + b, a - b, a * b, a % b)
+print(a / 4)
+print("n=" + 5)
+print([1, 2] + [3])
+print("ab" * 3)
+print(not true, true and false, nil or "fallback")
+print(1 < 2, "a" < "b", 2 == 2.0, "x" != "y")
+print([1, [2, 3]] == [1, [2, 3]], {a: 1} == {a: 1})
+print(-a, -(a + b))
+print(len("hello"), len([1, 2, 3]), len({x: 1}))
+print(type(1), type("s"), type(true), type(nil), type([]), type({}), type(print))
+print([1, "two", nil, true, {k: "v"}])

@@ -1,0 +1,15 @@
+{
+  "name": "pico-lang",
+  "version": "0.1.0",
+  "description": "Pico, a small programming language for .pico files",
+  "license": "MIT",
+  "bin": {
+    "pico": "bin/pico.js"
+  },
+  "scripts": {
+    "test": "node tests/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

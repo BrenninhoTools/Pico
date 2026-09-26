@@ -1,0 +1,42 @@
+let i = 0
+while true {
+  i += 1
+  if i == 2 {
+    continue
+  }
+  if i > 4 {
+    break
+  }
+  print("i =", i)
+}
+
+for x in [10, 20] {
+  print(x)
+}
+for idx, x in ["a", "b"] {
+  print(idx, x)
+}
+for ch in "hi" {
+  print(ch)
+}
+for k in {p: 1, q: 2} {
+  print(k)
+}
+
+if 1 > 2 {
+  print("no")
+} else if 2 > 1 {
+  print("else if")
+} else {
+  print("no")
+}
+
+fn firstBig(list) {
+  for x in list {
+    if x > 10 {
+      return x
+    }
+  }
+  return nil
+}
+print(firstBig([1, 50, 100]), firstBig([1]))

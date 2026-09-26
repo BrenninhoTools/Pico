@@ -1,0 +1,18 @@
+fn makeCounter() {
+  let count = 0
+  return fn() {
+    count += 1
+    return count
+  }
+}
+
+let next = makeCounter()
+next()
+next()
+print("count:", next())
+
+let person = {name: "Ada", age: 36}
+person.age += 1
+for key, value in person {
+  print(key + ":", value)
+}

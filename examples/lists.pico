@@ -1,0 +1,13 @@
+use text
+
+let numbers = [5, 3, 8, 1, 9, 2]
+let sorted = sort(numbers)
+let squares = map(sorted, fn(x) { return x * x })
+let evens = filter(squares, fn(x) { return x % 2 == 0 })
+let total = reduce(squares, fn(a, b) { return a + b }, 0)
+
+print("sorted:", sorted)
+print("squares:", squares)
+print("evens:", evens)
+print("total:", total)
+print(text.join(map(sorted, str), ", "))

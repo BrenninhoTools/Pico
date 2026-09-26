@@ -1,0 +1,45 @@
+try {
+  let x = 1 / 0
+} catch e {
+  print("caught:", e)
+}
+
+try {
+  throw "custom"
+} catch e {
+  print("caught:", e)
+}
+
+try {
+  throw {code: 42}
+} catch e {
+  print(e.code)
+}
+
+try {
+  undefinedName + 1
+} catch e {
+  print(e)
+}
+
+try {
+  let list = [1]
+  print(list[5])
+} catch e {
+  print(e)
+}
+
+try {
+  len(5)
+} catch e {
+  print(e)
+}
+
+fn deep(n) {
+  return deep(n + 1)
+}
+try {
+  deep(0)
+} catch e {
+  print(e)
+}

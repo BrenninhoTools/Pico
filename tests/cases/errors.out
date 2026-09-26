@@ -1,0 +1,7 @@
+caught: division by zero
+caught: custom
+42
+undefined variable 'undefinedName'
+index 5 out of range (length 1)
+len argument 1 must be string or list or map, got number
+maximum call depth exceeded
