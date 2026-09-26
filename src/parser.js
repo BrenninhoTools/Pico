@@ -29,7 +29,7 @@ class Parser {
 
   describe(tok) {
     if (tok.type === 'eof') return 'end of file';
-    if (tok.type === 'string') return 'string';
+    if (tok.type === 'string' || tok.type === 'template') return 'string';
     if (tok.type === 'number') return 'number';
     if (tok.type === 'ident') return `identifier '${tok.value}'`;
     return `'${tok.value}'`;
@@ -117,6 +117,8 @@ class Parser {
           return this.useStatement();
         case 'try':
           return this.tryStatement();
+        case 'struct':
+          return this.structStatement();
         case 'throw':
           return node('Throw', this.take(), { value: this.expression() });
         default:
@@ -155,15 +157,58 @@ class Parser {
   params() {
     this.expect('op', '(');
     const params = [];
+    let seenDefault = false;
     if (!this.isOp(')')) {
       do {
+        const rest = this.accept('op', '...') !== null;
         const p = this.expect('ident');
-        if (params.includes(p.value)) this.fail(`duplicate parameter '${p.value}'`, p);
-        params.push(p.value);
+        if (params.some((q) => q.name === p.value)) this.fail(`duplicate parameter '${p.value}'`, p);
+        let init = null;
+        if (!rest && this.accept('op', '=')) {
+          init = this.expression();
+          seenDefault = true;
+        } else if (!rest && seenDefault) {
+          this.fail(`parameter '${p.value}' needs a default value`, p);
+        }
+        params.push({ name: p.value, init, rest });
+        if (rest && !this.isOp(')')) this.fail('a rest parameter must be last');
       } while (this.accept('op', ','));
     }
     this.expect('op', ')');
     return params;
+  }
+
+  structStatement() {
+    const t = this.take();
+    const name = this.expect('ident').value;
+    this.expect('op', '{');
+    const fields = [];
+    const methods = [];
+    while (!this.isOp('}')) {
+      if (this.is('eof')) this.fail("expected '}', found end of file");
+      if (this.isKeyword('fn')) {
+        const ft = this.take();
+        const methodName = this.expect('ident');
+        const fn = this.functionRest(ft, `${name}.${methodName.value}`);
+        if (fn.params.length === 0 || fn.params[0].name !== 'self' || fn.params[0].rest) {
+          this.fail(`method '${methodName.value}' must take 'self' as its first parameter`, methodName);
+        }
+        if (methods.some((m) => m.name === methodName.value)) {
+          this.fail(`duplicate method '${methodName.value}'`, methodName);
+        }
+        methods.push({ name: methodName.value, fn });
+      } else {
+        const field = this.expect('ident');
+        if (fields.includes(field.value)) this.fail(`duplicate field '${field.value}'`, field);
+        fields.push(field.value);
+      }
+      this.accept('op', ',');
+      this.skipSemicolons();
+    }
+    this.expect('op', '}');
+    const clash = methods.find((m) => fields.includes(m.name));
+    if (clash) this.fail(`'${clash.name}' is both a field and a method of ${name}`, t);
+    return node('Struct', t, { name, fields, methods });
   }
 
   returnStatement() {
@@ -253,7 +298,26 @@ class Parser {
   }
 
   expression() {
-    return this.orExpression();
+    const cond = this.pipeExpression();
+    if (this.isOp('?')) {
+      const t = this.take();
+      const then = this.expression();
+      this.expect('op', ':');
+      return node('Ternary', t, { cond, then, otherwise: this.expression() });
+    }
+    return cond;
+  }
+
+  pipeExpression() {
+    let left = this.orExpression();
+    while (this.isOp('|>')) {
+      const t = this.take();
+      const right = this.orExpression();
+      left = right.type === 'Call'
+        ? { ...right, args: [left, ...right.args] }
+        : node('Call', t, { callee: right, args: [left] });
+    }
+    return left;
   }
 
   orExpression() {
@@ -279,7 +343,28 @@ class Parser {
       const t = this.take();
       return node('Unary', t, { op: 'not', operand: this.notExpression() });
     }
-    return this.binaryLevel(EQUALITY, () => this.binaryLevel(COMPARISON, () => this.binaryLevel(ADDITIVE, () => this.binaryLevel(MULTIPLICATIVE, () => this.unary()))));
+    return this.binaryLevel(EQUALITY, () => this.binaryLevel(COMPARISON, () => this.range()));
+  }
+
+  additive() {
+    return this.binaryLevel(ADDITIVE, () => this.binaryLevel(MULTIPLICATIVE, () => this.unary()));
+  }
+
+  range() {
+    const start = this.additive();
+    if ((this.isOp('..') || this.isOp('..=')) && !this.tok.newline) {
+      const t = this.take();
+      return node('Range', t, { start, end: this.additive(), inclusive: t.value === '..=' });
+    }
+    return start;
+  }
+
+  argument() {
+    if (this.isOp('...')) {
+      const t = this.take();
+      return node('Spread', t, { value: this.expression() });
+    }
+    return this.expression();
   }
 
   binaryLevel(ops, next) {
@@ -309,7 +394,7 @@ class Parser {
         const args = [];
         if (!this.isOp(')')) {
           do {
-            args.push(this.expression());
+            args.push(this.argument());
           } while (this.accept('op', ','));
         }
         this.expect('op', ')');
@@ -337,6 +422,9 @@ class Parser {
       case 'string':
         this.take();
         return node('Literal', t, { value: t.value });
+      case 'template':
+        this.take();
+        return node('Template', t, { parts: t.value.map((p) => (typeof p === 'string' ? p : this.interpolation(p))) });
       case 'ident':
         this.take();
         return node('Identifier', t, { name: t.value });
@@ -370,11 +458,33 @@ class Parser {
     return this.fail(`unexpected ${this.describe(t)}`);
   }
 
+  interpolation(part) {
+    let tokens;
+    try {
+      tokens = tokenize(part.code, this.file);
+    } catch (e) {
+      e.line = part.line;
+      e.col = part.col;
+      throw e;
+    }
+    for (const tok of tokens) {
+      tok.line = part.line;
+      tok.col = part.col;
+      tok.newline = false;
+    }
+    const sub = new Parser(tokens, this.file);
+    sub.fnDepth = this.fnDepth;
+    sub.loopDepth = this.loopDepth;
+    const expr = sub.expression();
+    if (!sub.is('eof')) sub.fail(`unexpected ${sub.describe(sub.tok)} in interpolation`);
+    return expr;
+  }
+
   listLiteral() {
     const t = this.take();
     const items = [];
     while (!this.isOp(']')) {
-      items.push(this.expression());
+      items.push(this.argument());
       if (!this.accept('op', ',')) break;
     }
     this.expect('op', ']');

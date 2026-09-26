@@ -1,0 +1,36 @@
+struct Point {
+  x
+  y
+
+  fn add(self, other) {
+    return Point(self.x + other.x, self.y + other.y)
+  }
+
+  fn describe(self) {
+    return "({self.x}, {self.y})"
+  }
+}
+
+let total = 0..=10
+  |> filter(fn(n) { return n % 2 == 0 })
+  |> map(fn(n) { return Point(n, n * n) })
+  |> reduce(fn(acc, p) { return acc.add(p) }, Point(0, 0))
+
+print("sum of even points: {total.describe()}")
+
+struct Counter {
+  count
+
+  fn bump(self, by = 1) {
+    self.count += by
+    return self
+  }
+}
+
+let c = Counter(0)
+c.bump().bump(5)
+print(c)
+
+let n = 3
+print("{n} squared is {n * n}", n > 0 ? "positive" : "not positive")
+print([3, 1, 2] |> sort |> map(str))

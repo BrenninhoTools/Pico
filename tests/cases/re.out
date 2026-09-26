@@ -1,0 +1,8 @@
+true false
+["1", "22", "333"]
+a b c
+["a", "b", "c"]
+ada@pico 5 ["ada", "pico"]
+nil
+007 ab..| ["a", "b"]
+raw \n {not} interpolated

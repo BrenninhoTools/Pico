@@ -1,0 +1,66 @@
+struct Point {
+  x
+  y
+
+  fn add(self, other) {
+    return Point(self.x + other.x, self.y + other.y)
+  }
+
+  fn scale(self, k = 2) {
+    self.x *= k
+    self.y *= k
+    return self
+  }
+
+  fn describe(self) {
+    return "({self.x}, {self.y})"
+  }
+}
+
+let p = Point(1, 2)
+let q = Point(3, 4)
+print(p)
+print(p.add(q).describe())
+print(p.scale().describe(), p.scale(10).describe())
+print(type(p), type(Point), p == Point(20, 40), p == q)
+print(p.x, q.y)
+p.x = 99
+print(p)
+
+struct Stack {
+  items
+
+  fn push(self, item) {
+    push(self.items, item)
+    return self
+  }
+
+  fn size(self) {
+    return len(self.items)
+  }
+}
+
+let stack = Stack([])
+stack.push(1).push(2).push(3)
+print(stack.size(), stack)
+
+try {
+  p.z
+} catch e {
+  print(e)
+}
+try {
+  p.z = 1
+} catch e {
+  print(e)
+}
+try {
+  Point(1)
+} catch e {
+  print(e)
+}
+try {
+  p.add()
+} catch e {
+  print(e)
+}

@@ -3,9 +3,11 @@ const path = require('path');
 const { parse } = require('./parser');
 const { PicoError, ExitSignal } = require('./errors');
 const { createLibrary } = require('./stdlib');
-const { Env, PicoFunction, Native, typeOf, show, equals, truthy } = require('./values');
+const {
+  Env, PicoFunction, Native, StructType, Instance, BoundMethod, typeOf, show, equals, truthy,
+} = require('./values');
 
-const MAX_DEPTH = 1000;
+const DEFAULT_MAX_DEPTH = 1000;
 const BREAK = { kind: 'break' };
 const CONTINUE = { kind: 'continue' };
 
@@ -17,11 +19,13 @@ class ReturnSignal {
 }
 
 class Interpreter {
-  constructor({ args = [], out = (text) => process.stdout.write(text) } = {}) {
+  constructor({ args = [], out = (text) => process.stdout.write(text), maxDepth = DEFAULT_MAX_DEPTH } = {}) {
     const library = createLibrary(out, args);
     this.globals = new Env();
     for (const [name, value] of library.globals) this.globals.define(name, value);
     this.builtinModules = library.modules;
+    this.methods = library.methods;
+    this.maxDepth = maxDepth;
     this.imports = new Map();
     this.file = '<main>';
     this.depth = 0;
@@ -49,15 +53,22 @@ class Interpreter {
     return err;
   }
 
-  runFile(filePath, env = new Env(this.globals)) {
+  check(filePath) {
     const resolved = path.resolve(filePath);
-    let source;
+    parse(this.readSource(filePath, resolved), resolved);
+  }
+
+  readSource(filePath, resolved) {
     try {
-      source = fs.readFileSync(resolved, 'utf8');
+      return fs.readFileSync(resolved, 'utf8');
     } catch (e) {
       throw new PicoError(`cannot read '${filePath}': ${e.code || e.message}`);
     }
-    return this.runSource(source, resolved, env);
+  }
+
+  runFile(filePath, env = new Env(this.globals)) {
+    const resolved = path.resolve(filePath);
+    return this.runSource(this.readSource(filePath, resolved), resolved, env);
   }
 
   runSource(source, file, env = new Env(this.globals)) {
@@ -136,6 +147,9 @@ class Interpreter {
         return undefined;
       case 'Try':
         return this.execTry(node, env);
+      case 'Struct':
+        this.execStruct(node, env);
+        return undefined;
       case 'Throw': {
         const value = this.eval(node.value, env);
         throw new PicoError(show(value), { file: this.file, line: node.line, col: node.col }, value);
@@ -145,16 +159,44 @@ class Interpreter {
     }
   }
 
+  execStruct(node, env) {
+    const methods = new Map();
+    env.define(node.name, new StructType(node.name, node.fields, methods));
+    for (const { name, fn } of node.methods) {
+      methods.set(name, new PicoFunction(fn.name, fn.params, fn.body, env, this.file));
+    }
+  }
+
+  loopStep(node, scope) {
+    const signal = this.execBlock(node.body.body, scope);
+    return signal === CONTINUE ? undefined : signal;
+  }
+
   execWhile(node, env) {
     while (truthy(this.eval(node.cond, env))) {
-      const signal = this.execBlock(node.body.body, new Env(env));
+      const signal = this.loopStep(node, new Env(env));
       if (signal === BREAK) break;
-      if (signal && signal !== CONTINUE) return signal;
+      if (signal) return signal;
     }
     return undefined;
   }
 
   execFor(node, env) {
+    const single = node.second === null;
+
+    if (node.iterable.type === 'Range') {
+      const [from, to] = this.rangeBounds(node.iterable, env);
+      for (let n = from; n < to; n++) {
+        const scope = new Env(env);
+        scope.define(node.first, single ? n : n - from);
+        if (!single) scope.define(node.second, n);
+        const signal = this.loopStep(node, scope);
+        if (signal === BREAK) break;
+        if (signal) return signal;
+      }
+      return undefined;
+    }
+
     const subject = this.eval(node.iterable, env);
     let entries;
     if (Array.isArray(subject)) {
@@ -166,19 +208,18 @@ class Interpreter {
     } else {
       throw this.error(node.iterable, `cannot iterate over ${typeOf(subject)}`);
     }
-    const single = node.second === null;
-    const isSequence = !(subject instanceof Map);
+    const isMap = subject instanceof Map;
     for (const [key, item] of entries) {
       const scope = new Env(env);
       if (single) {
-        scope.define(node.first, isSequence ? item : key);
+        scope.define(node.first, isMap ? key : item);
       } else {
         scope.define(node.first, key);
         scope.define(node.second, item);
       }
-      const signal = this.execBlock(node.body.body, scope);
+      const signal = this.loopStep(node, scope);
       if (signal === BREAK) break;
-      if (signal && signal !== CONTINUE) return signal;
+      if (signal) return signal;
     }
     return undefined;
   }
@@ -241,6 +282,13 @@ class Interpreter {
 
     const object = this.eval(target.object, env);
     if (target.type === 'Member') {
+      if (object instanceof Instance) {
+        if (!object.fields.has(target.name)) {
+          throw this.error(target, `${object.type.name} has no field '${target.name}'`);
+        }
+        object.fields.set(target.name, combine(object.fields.get(target.name)));
+        return;
+      }
       if (!(object instanceof Map)) throw this.error(target, `cannot set property on ${typeOf(object)}`);
       object.set(target.name, combine(object.has(target.name) ? object.get(target.name) : null));
       return;
@@ -271,10 +319,35 @@ class Interpreter {
     return i;
   }
 
+  rangeBounds(node, env) {
+    const from = this.eval(node.start, env);
+    const to = this.eval(node.end, env);
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      throw this.error(node, 'range bounds must be integers');
+    }
+    return [from, node.inclusive ? to + 1 : to];
+  }
+
+  evalItems(nodes, env) {
+    const items = [];
+    for (const item of nodes) {
+      if (item.type !== 'Spread') {
+        items.push(this.eval(item, env));
+        continue;
+      }
+      const spread = this.eval(item.value, env);
+      if (!Array.isArray(spread)) throw this.error(item, `cannot spread ${typeOf(spread)}`);
+      for (const x of spread) items.push(x);
+    }
+    return items;
+  }
+
   eval(node, env) {
     switch (node.type) {
       case 'Literal':
         return node.value;
+      case 'Template':
+        return node.parts.map((p) => (typeof p === 'string' ? p : show(this.eval(p, env)))).join('');
       case 'Identifier': {
         const owner = env.find(node.name);
         if (!owner) throw this.error(node, `undefined variable '${node.name}'`);
@@ -283,9 +356,17 @@ class Interpreter {
       case 'Function':
         return new PicoFunction(node.name, node.params, node.body, env, this.file);
       case 'List':
-        return node.items.map((item) => this.eval(item, env));
+        return this.evalItems(node.items, env);
       case 'Map':
         return new Map(node.entries.map(({ key, value }) => [key, this.eval(value, env)]));
+      case 'Range': {
+        const [from, to] = this.rangeBounds(node, env);
+        const items = [];
+        for (let n = from; n < to; n++) items.push(n);
+        return items;
+      }
+      case 'Ternary':
+        return truthy(this.eval(node.cond, env)) ? this.eval(node.then, env) : this.eval(node.otherwise, env);
       case 'Unary':
         return this.unary(node, env);
       case 'Binary':
@@ -297,19 +378,30 @@ class Interpreter {
       }
       case 'Call': {
         const callee = this.eval(node.callee, env);
-        const args = node.args.map((arg) => this.eval(arg, env));
-        return this.call(callee, args, node);
+        return this.call(callee, this.evalItems(node.args, env), node);
       }
       case 'Index':
         return this.index(this.eval(node.object, env), this.eval(node.index, env), node);
-      case 'Member': {
-        const object = this.eval(node.object, env);
-        if (!(object instanceof Map)) throw this.error(node, `cannot read '${node.name}' of ${typeOf(object)}`);
-        return object.has(node.name) ? object.get(node.name) : null;
-      }
+      case 'Member':
+        return this.member(this.eval(node.object, env), node.name, node);
       default:
         throw this.error(node, `unknown expression '${node.type}'`);
     }
+  }
+
+  member(object, name, node) {
+    if (object instanceof Instance) {
+      if (object.fields.has(name)) return object.fields.get(name);
+      const method = object.type.methods.get(name);
+      if (method) return new BoundMethod(method, object);
+      throw this.error(node, `${object.type.name} has no field or method '${name}'`);
+    }
+    if (object instanceof Map && object.has(name)) return object.get(name);
+    const table = this.methods.get(typeOf(object));
+    const builtin = table && table.get(name);
+    if (builtin) return new Native(name, (args, interp) => builtin.fn([object, ...args], interp, 1));
+    if (object instanceof Map) return null;
+    throw this.error(node, `cannot read '${name}' of ${typeOf(object)}`);
   }
 
   unary(node, env) {
@@ -383,20 +475,40 @@ class Interpreter {
         throw this.normalize(e, node);
       }
     }
-    if (!(fn instanceof PicoFunction)) {
-      throw this.error(node, `cannot call ${typeOf(fn)}`);
+    if (fn instanceof PicoFunction) return this.callFunction(fn, args, node, 0);
+    if (fn instanceof BoundMethod) return this.callFunction(fn.fn, [fn.self, ...args], node, 1);
+    if (fn instanceof StructType) return this.construct(fn, args, node);
+    throw this.error(node, `cannot call ${typeOf(fn)}`);
+  }
+
+  construct(type, args, node) {
+    if (args.length !== type.fields.length) {
+      throw this.error(node, `${type.name} expects ${type.fields.length} field value(s), got ${args.length}`);
     }
-    if (args.length !== fn.params.length) {
-      throw this.error(node, `${fn.name || 'function'} expects ${fn.params.length} argument(s), got ${args.length}`);
+    return new Instance(type, new Map(type.fields.map((name, i) => [name, args[i]])));
+  }
+
+  callFunction(fn, args, node, offset) {
+    if (args.length < fn.minArgs || args.length > fn.maxArgs) {
+      const min = fn.minArgs - offset;
+      const max = fn.maxArgs - offset;
+      let expected = `${min} to ${max}`;
+      if (fn.hasRest) expected = `at least ${min}`;
+      else if (min === max) expected = `${min}`;
+      throw this.error(node, `${fn.name || 'function'} expects ${expected} argument(s), got ${args.length - offset}`);
     }
-    if (this.depth >= MAX_DEPTH) throw this.error(node, 'maximum call depth exceeded');
+    if (this.depth >= this.maxDepth) throw this.error(node, 'maximum call depth exceeded');
 
     const scope = new Env(fn.env);
-    fn.params.forEach((name, i) => scope.define(name, args[i]));
     const previousFile = this.file;
     this.file = fn.file;
     this.depth++;
     try {
+      fn.params.forEach((param, i) => {
+        if (param.rest) scope.define(param.name, args.slice(i));
+        else if (i < args.length) scope.define(param.name, args[i]);
+        else scope.define(param.name, this.eval(param.init, scope));
+      });
       const signal = this.execBlock(fn.body.body, scope);
       return signal instanceof ReturnSignal ? signal.value : null;
     } finally {

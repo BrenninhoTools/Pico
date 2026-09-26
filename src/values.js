@@ -23,6 +23,9 @@ class PicoFunction {
     this.body = body;
     this.env = env;
     this.file = file;
+    this.hasRest = params.some((p) => p.rest);
+    this.minArgs = params.filter((p) => !p.init && !p.rest).length;
+    this.maxArgs = this.hasRest ? Infinity : params.length;
   }
 }
 
@@ -33,13 +36,41 @@ class Native {
   }
 }
 
+class StructType {
+  constructor(name, fields, methods) {
+    this.name = name;
+    this.fields = fields;
+    this.methods = methods;
+  }
+}
+
+class Instance {
+  constructor(type, fields) {
+    this.type = type;
+    this.fields = fields;
+  }
+}
+
+class BoundMethod {
+  constructor(fn, self) {
+    this.fn = fn;
+    this.self = self;
+  }
+}
+
 function typeOf(value) {
   if (value === null) return 'nil';
   if (Array.isArray(value)) return 'list';
   if (value instanceof Map) return 'map';
-  if (value instanceof PicoFunction || value instanceof Native) return 'fn';
+  if (value instanceof Instance) return 'instance';
+  if (value instanceof StructType) return 'struct';
+  if (value instanceof PicoFunction || value instanceof Native || value instanceof BoundMethod) return 'fn';
   if (typeof value === 'boolean') return 'bool';
   return typeof value;
+}
+
+function typeName(value) {
+  return value instanceof Instance ? value.type.name : typeOf(value);
 }
 
 function show(value, nested = false) {
@@ -52,8 +83,14 @@ function show(value, nested = false) {
       return `[${value.map((item) => show(item, true)).join(', ')}]`;
     case 'map':
       return `{${[...value].map(([key, item]) => `${key}: ${show(item, true)}`).join(', ')}}`;
+    case 'instance':
+      return `${value.type.name}(${[...value.fields].map(([key, item]) => `${key}: ${show(item, true)}`).join(', ')})`;
+    case 'struct':
+      return `<struct ${value.name}>`;
     case 'fn':
-      return value instanceof Native ? `<native ${value.name}>` : `<fn ${value.name || 'anonymous'}>`;
+      if (value instanceof Native) return `<native ${value.name}>`;
+      if (value instanceof BoundMethod) return `<method ${value.fn.name}>`;
+      return `<fn ${value.name || 'anonymous'}>`;
     default:
       return String(value);
   }
@@ -64,18 +101,35 @@ function equals(a, b) {
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((item, i) => equals(item, b[i]));
   }
-  if (a instanceof Map && b instanceof Map) {
-    if (a.size !== b.size) return false;
-    for (const [key, item] of a) {
-      if (!b.has(key) || !equals(item, b.get(key))) return false;
-    }
-    return true;
+  if (a instanceof Map && b instanceof Map) return sameEntries(a, b);
+  if (a instanceof Instance && b instanceof Instance) {
+    return a.type === b.type && sameEntries(a.fields, b.fields);
   }
   return false;
+}
+
+function sameEntries(a, b) {
+  if (a.size !== b.size) return false;
+  for (const [key, item] of a) {
+    if (!b.has(key) || !equals(item, b.get(key))) return false;
+  }
+  return true;
 }
 
 function truthy(value) {
   return value !== null && value !== false;
 }
 
-module.exports = { Env, PicoFunction, Native, typeOf, show, equals, truthy };
+module.exports = {
+  Env,
+  PicoFunction,
+  Native,
+  StructType,
+  Instance,
+  BoundMethod,
+  typeOf,
+  typeName,
+  show,
+  equals,
+  truthy,
+};

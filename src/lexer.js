@@ -3,11 +3,13 @@ const { PicoError } = require('./errors');
 const KEYWORDS = new Set([
   'let', 'fn', 'return', 'if', 'else', 'while', 'for', 'in', 'break', 'continue',
   'true', 'false', 'nil', 'and', 'or', 'not', 'use', 'as', 'try', 'catch', 'throw',
+  'struct',
 ]);
 
-const DOUBLE = new Set(['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=']);
-const SINGLE = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '(', ')', '{', '}', '[', ']', ',', '.', ':', ';']);
-const ESCAPES = { n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', '"': '"', "'": "'" };
+const TRIPLE = new Set(['...', '..=']);
+const DOUBLE = new Set(['==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '..', '|>']);
+const SINGLE = new Set(['+', '-', '*', '/', '%', '<', '>', '=', '(', ')', '{', '}', '[', ']', ',', '.', ':', ';', '?']);
+const ESCAPES = { n: '\n', t: '\t', r: '\r', 0: '\0', '\\': '\\', '"': '"', "'": "'", '{': '{', '}': '}' };
 
 const isDigit = (c) => c >= '0' && c <= '9';
 const isIdentStart = (c) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_';
@@ -38,6 +40,38 @@ function tokenize(source, file) {
   const emit = (type, value, l, c) => {
     tokens.push({ type, value, line: l, col: c, newline });
     newline = false;
+  };
+
+  const atLineEnd = () => i >= source.length || source[i] === '\n';
+
+  const readNestedString = (quote, l, c) => {
+    let text = '';
+    for (;;) {
+      if (atLineEnd()) fail('unterminated string', l, c);
+      const ch = step();
+      text += ch;
+      if (ch === '\\' && i < source.length) text += step();
+      else if (ch === quote) return text;
+    }
+  };
+
+  const readInterpolation = (l, c) => {
+    let depth = 1;
+    let code = '';
+    for (;;) {
+      if (atLineEnd()) fail('unterminated interpolation', l, c);
+      const ch = step();
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          if (code.trim() === '') fail('empty interpolation', l, c);
+          return code;
+        }
+      }
+      code += ch;
+      if (ch === '"' || ch === "'") code += readNestedString(ch, l, c);
+    }
   };
 
   while (i < source.length) {
@@ -75,11 +109,24 @@ function tokenize(source, file) {
       continue;
     }
 
+    if (ch === '`') {
+      step();
+      let text = '';
+      while (source[i] !== '`') {
+        if (atLineEnd()) fail('unterminated raw string', l, c);
+        text += step();
+      }
+      step();
+      emit('string', text, l, c);
+      continue;
+    }
+
     if (ch === '"' || ch === "'") {
       const quote = step();
+      const parts = [];
       let text = '';
       for (;;) {
-        if (i >= source.length || source[i] === '\n') fail('unterminated string', l, c);
+        if (atLineEnd()) fail('unterminated string', l, c);
         const d = step();
         if (d === quote) break;
         if (d === '\\') {
@@ -89,11 +136,29 @@ function tokenize(source, file) {
           const e = step();
           if (!Object.hasOwn(ESCAPES, e)) fail(`unknown escape '\\${e}'`, escapeLine, escapeCol);
           text += ESCAPES[e];
+        } else if (d === '{') {
+          if (text !== '') parts.push(text);
+          text = '';
+          parts.push({ code: readInterpolation(l, c), line: l, col: c });
         } else {
           text += d;
         }
       }
-      emit('string', text, l, c);
+      if (parts.length === 0) {
+        emit('string', text, l, c);
+      } else {
+        if (text !== '') parts.push(text);
+        emit('template', parts, l, c);
+      }
+      continue;
+    }
+
+    const triple = source.slice(i, i + 3);
+    if (TRIPLE.has(triple)) {
+      step();
+      step();
+      step();
+      emit('op', triple, l, c);
       continue;
     }
 

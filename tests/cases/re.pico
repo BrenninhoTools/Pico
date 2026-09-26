@@ -1,0 +1,12 @@
+use re
+use text
+
+print(re.test(`^[a-z]+$`, "hello"), re.test(`^[a-z]+$`, "Hello1"))
+print(re.find_all(`[0-9]+`, "a1 b22 c333"))
+print(re.replace(`\s+`, "a  b   c", " "))
+print(re.split(`,\s*`, "a, b,c"))
+let m = re.match(`(\w+)@(\w+)`, "mail ada@pico now")
+print(m.text, m.index, m.groups)
+print(re.match("x", "abc"))
+print(text.pad_left("7", 3, "0"), text.pad_right("ab", 4, ".") + "|", text.lines("a\nb"))
+print(`raw \n {not} interpolated`)

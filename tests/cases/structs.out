@@ -1,0 +1,11 @@
+Point(x: 1, y: 2)
+(4, 6)
+(2, 4) (20, 40)
+Point struct true false
+20 4
+Point(x: 99, y: 40)
+3 Stack(items: [1, 2, 3])
+Point has no field or method 'z'
+Point has no field 'z'
+Point expects 2 field value(s), got 1
+Point.add expects 1 argument(s), got 0

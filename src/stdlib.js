@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const { StringDecoder } = require('string_decoder');
 const { PicoError, ExitSignal } = require('./errors');
-const { Native, typeOf, show, equals, truthy } = require('./values');
+const { Native, typeOf, typeName, show, equals, truthy } = require('./values');
 
 function fail(message) {
   throw new PicoError(message);
@@ -11,10 +11,12 @@ function fail(message) {
 
 function native(name, spec, fn) {
   const min = spec.filter((s) => !s.endsWith('?')).length;
-  return new Native(name, (args, interp) => {
+  return new Native(name, (args, interp, bound = 0) => {
     if (args.length < min || args.length > spec.length) {
-      const expected = min === spec.length ? `${min}` : `${min} to ${spec.length}`;
-      fail(`${name} expects ${expected} argument(s), got ${args.length}`);
+      const lo = min - bound;
+      const hi = spec.length - bound;
+      const expected = lo === hi ? `${lo}` : `${lo} to ${hi}`;
+      fail(`${name} expects ${expected} argument(s), got ${args.length - bound}`);
     }
     args.forEach((arg, i) => {
       const optional = spec[i].endsWith('?');
@@ -22,7 +24,8 @@ function native(name, spec, fn) {
       if (want === 'any' || (optional && arg === null)) return;
       const allowed = want.split('|');
       if (!allowed.includes(typeOf(arg))) {
-        fail(`${name} argument ${i + 1} must be ${allowed.join(' or ')}, got ${typeOf(arg)}`);
+        const label = i < bound ? 'receiver' : `argument ${i + 1 - bound}`;
+        fail(`${name} ${label} must be ${allowed.join(' or ')}, got ${typeOf(arg)}`);
       }
     });
     return fn(args, interp);
@@ -150,6 +153,31 @@ function createTextModule() {
       return s.repeat(n);
     })],
     ['chars', native('chars', ['string'], ([s]) => Array.from(s))],
+    ['lines', native('lines', ['string'], ([s]) => s.split(/\r?\n/))],
+    ['pad_left', native('pad_left', ['string', 'number', 'string?'], ([s, width, fill]) => s.padStart(width, fill ?? ' '))],
+    ['pad_right', native('pad_right', ['string', 'number', 'string?'], ([s, width, fill]) => s.padEnd(width, fill ?? ' '))],
+  ]);
+}
+
+function createReModule() {
+  const compile = (pattern, flags = '') => {
+    try {
+      return new RegExp(pattern, flags);
+    } catch (e) {
+      return fail(`invalid pattern: ${e.message}`);
+    }
+  };
+  const groups = (m) => m.slice(1).map((g) => g ?? null);
+  return new Map([
+    ['test', native('test', ['string', 'string'], ([pattern, s]) => compile(pattern).test(s))],
+    ['match', native('match', ['string', 'string'], ([pattern, s]) => {
+      const m = compile(pattern).exec(s);
+      if (!m) return null;
+      return new Map([['text', m[0]], ['index', m.index], ['groups', groups(m)]]);
+    })],
+    ['find_all', native('find_all', ['string', 'string'], ([pattern, s]) => [...s.matchAll(compile(pattern, 'g'))].map((m) => m[0]))],
+    ['replace', native('replace', ['string', 'string', 'string'], ([pattern, s, repl]) => s.replace(compile(pattern, 'g'), repl))],
+    ['split', native('split', ['string', 'string'], ([pattern, s]) => s.split(compile(pattern)))],
   ]);
 }
 
@@ -239,7 +267,7 @@ function createLibrary(out, args) {
     const n = Number(v);
     return Number.isNaN(n) ? null : n;
   }));
-  def(native('type', ['any'], ([v]) => typeOf(v)));
+  def(native('type', ['any'], ([v]) => typeName(v)));
   def(native('range', ['number', 'number?', 'number?'], ([a, b, step]) => {
     const [start, stop] = b === null || b === undefined ? [0, a] : [a, b];
     const by = step ?? 1;
@@ -290,6 +318,47 @@ function createLibrary(out, args) {
     list.forEach((x) => interp.call(f, [x], null));
     return null;
   }));
+  def(native('sum', ['list'], ([list]) => {
+    let total = 0;
+    for (const x of list) {
+      if (typeof x !== 'number') fail(`sum expects numbers, got ${typeOf(x)}`);
+      total += x;
+    }
+    return total;
+  }));
+  def(native('any', ['list', 'fn?'], ([list, f], interp) => list.some((x) => truthy(f ? interp.call(f, [x], null) : x))));
+  def(native('all', ['list', 'fn?'], ([list, f], interp) => list.every((x) => truthy(f ? interp.call(f, [x], null) : x))));
+  def(native('find', ['list', 'fn'], ([list, f], interp) => {
+    for (const x of list) {
+      if (truthy(interp.call(f, [x], null))) return x;
+    }
+    return null;
+  }));
+  def(native('first', ['list'], ([list]) => (list.length ? list[0] : null)));
+  def(native('last', ['list'], ([list]) => (list.length ? list[list.length - 1] : null)));
+  def(native('index_of', ['list|string', 'any'], ([subject, item]) => {
+    if (typeof subject !== 'string') return subject.findIndex((x) => equals(x, item));
+    if (typeof item !== 'string') fail('index_of on a string needs a string');
+    return subject.indexOf(item);
+  }));
+  def(native('flat', ['list'], ([list]) => list.flatMap((x) => (Array.isArray(x) ? x : [x]))));
+  def(native('unique', ['list'], ([list]) => {
+    const seen = [];
+    for (const x of list) {
+      if (!seen.some((y) => equals(x, y))) seen.push(x);
+    }
+    return seen;
+  }));
+  def(native('zip', ['list', 'list'], ([a, b]) => Array.from({ length: Math.min(a.length, b.length) }, (_, i) => [a[i], b[i]])));
+  def(native('entries', ['map'], ([m]) => [...m].map(([k, v]) => [k, v])));
+  def(native('from_entries', ['list'], ([pairs]) => new Map(pairs.map((pair) => {
+    if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string') {
+      fail('from_entries expects [key, value] pairs with string keys');
+    }
+    return pair;
+  }))));
+  def(native('copy', ['list|map'], ([v]) => (Array.isArray(v) ? [...v] : new Map(v))));
+  def(native('join', ['list', 'string?'], ([items, sep]) => items.map((item) => show(item)).join(sep ?? '')));
   def(native('assert', ['any', 'string?'], ([cond, message]) => {
     if (!truthy(cond)) fail(message ?? 'assertion failed');
     return null;
@@ -305,9 +374,21 @@ function createLibrary(out, args) {
     ['os', createOsModule(args)],
     ['time', createTimeModule()],
     ['json', createJsonModule()],
+    ['re', createReModule()],
   ]);
 
-  return { globals, modules };
+  const pick = (names) => new Map(names.map((name) => [name, globals.get(name)]));
+  const textMethods = [...modules.get('text')].filter(([name, value]) => value instanceof Native && name !== 'join');
+  const methods = new Map([
+    ['list', pick(['len', 'push', 'pop', 'remove', 'has', 'slice', 'reverse', 'sort', 'map', 'filter', 'reduce', 'each', 'sum', 'any', 'all', 'find', 'first', 'last', 'index_of', 'flat', 'unique', 'zip', 'join', 'copy', 'str'])],
+    ['string', new Map([...pick(['len', 'slice', 'reverse', 'has', 'str', 'num', 'index_of']), ...textMethods])],
+    ['map', pick(['len', 'keys', 'values', 'entries', 'has', 'remove', 'copy', 'str'])],
+    ['number', pick(['str'])],
+    ['bool', pick(['str'])],
+    ['nil', pick(['str'])],
+  ]);
+
+  return { globals, modules, methods };
 }
 
 module.exports = { createLibrary };
